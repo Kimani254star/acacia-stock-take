@@ -2,6 +2,7 @@
   "name": "Acacia Stock Count",
   "short_name": "Stock Count",
   "description": "Count stock on your phone and see the variance. Linked to your Acacia Books company.",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

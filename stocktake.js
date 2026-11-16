@@ -314,7 +314,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (!ss.length) h += '<div class="mute">No counts started yet.</div>';
     ss.forEach(function (s) {
       var st = stats(s);
-      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted' + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '') + '<button class="go" data-a="resume" data-k="' + esc(s.k) + '">Open</button></div>';
+      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted' + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '') + '<button class="go" data-a="resume" data-k="' + esc(s.k) + '">Edit</button><button class="go dng" data-a="del" data-k="' + esc(s.k) + '" aria-label="Delete this count">Delete</button></div>';
     });
     h += '</div><div class="card"><h2>Stock takes waiting in Books</h2>' + (S.loading ? '<div class="mute">Loading...</div>' : '');
     if (!S.loading && !S.takes.length) h += '<div class="mute">No open stock takes. Create one in Books (Inventory &gt; Assessment) or count a warehouse below.</div>';
@@ -340,11 +340,11 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (st.left && !s.pushedAt) h += '<div class="msg warn">' + st.left + ' item(s) have no count. They are left out of the variance unless you tick the box below. <button class="go" data-a="todo" style="margin-top:8px">Show items not counted</button></div>';
     if (s.pushedAt) {
       h += '<div class="msg ok"><b>Sent ' + esc(new Date(s.pushedAt).toLocaleTimeString()) + '.</b> ' + esc(s.pushedLines) + ' item(s) are waiting for Books.</div><div id="recv" class="msg warn">Waiting for Books to pick it up. Books must be open and signed in on a computer. You can close this screen.</div>' +
-        '<button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="clear">Clear this count from the phone</button>';
+        '<button class="btn ok" data-a="reedit">Edit counts and send again</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
     } else {
       h += '<div class="card"><label>Counted by</label><input id="by" type="text" value="' + esc(lget('acxst_by', U.name)) + '">' +
         (st.left ? '<label class="sw" style="margin-top:14px"><input type="checkbox" id="zero"> Treat the ' + st.left + ' uncounted item(s) as 0 (not on the shelf)</label>' : '') + '</div>' +
-        (msg ? '<div class="msg bad">' + esc(msg) + '</div>' : '') + '<button class="btn ok" id="pgo" data-a="push">Push to Assessment</button><button class="btn sec" data-a="back">Back to counting</button>';
+        (msg ? '<div class="msg bad">' + esc(msg) + '</div>' : '') + '<button class="btn ok" id="pgo" data-a="push">Push to Assessment</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
     }
     return h + '</div>';
   }
@@ -364,7 +364,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (!ss.length) h += '<div class="mute">No counts yet. Start one from the Dashboard.</div>';
     ss.slice().sort(function (a, b) { return String(b.startedAt || '').localeCompare(String(a.startedAt || '')); }).forEach(function (s) {
       var st = stats(s), pct = st.total ? Math.round(st.counted * 100 / st.total) : 0;
-      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted (' + pct + '%) · ' + fmt(st.units) + ' units · ' + st.left + ' left' + (s.startedAt ? ' · started ' + new Date(s.startedAt).toLocaleDateString() : '') + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '<span class="pill warn">not sent</span>') + '<button class="go" data-a="resume" data-k="' + esc(s.k) + '">Open</button></div>';
+      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted (' + pct + '%) · ' + fmt(st.units) + ' units · ' + st.left + ' left' + (s.startedAt ? ' · started ' + new Date(s.startedAt).toLocaleDateString() : '') + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '<span class="pill warn">not sent</span>') + '<button class="go" data-a="resume" data-k="' + esc(s.k) + '">Edit</button><button class="go dng" data-a="del" data-k="' + esc(s.k) + '" aria-label="Delete this count">Delete</button></div>';
     });
     return h + '</div></div>';
   }
@@ -417,6 +417,16 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     else if (a === 'scan') openScan();
     else if (a === 'review') { saveNow(); S.screen = 'review'; render(); }
     else if (a === 'inc' || a === 'dec') { var r = b.closest('.row'); if (r) bump(r.getAttribute('data-k'), a === 'inc' ? 1 : -1); }
+    else if (a === 'del') {
+      var dk = b.getAttribute('data-k'), ds = lget(skey(dk), null); if (!ds) return;
+      var dm = 'Delete "' + ds.title + '" from this phone? ' + (ds.pushedAt ? 'It was already sent to Books; the copy in Books is not changed. ' : 'It has not been sent to Books, so the counts will be lost. ') + 'This cannot be undone.';
+      if (confirm(dm)) { delSess(dk); if (S.sess && S.sess.k === dk) S.sess = null; toast('Count deleted.'); render(); }
+    }
+    else if (a === 'reedit') {
+      if (confirm('Edit this count and send it again? The new count replaces the one already sent. If Books has already applied it, check the variance in Books again afterwards.')) {
+        clearInterval(S.poll); delete S.sess.pushedAt; delete S.sess.pushedLines; saveNow(); S.screen = 'count'; render();
+      }
+    }
     else if (a === 'clear') { if (confirm('Remove this count from the phone? It cannot be undone.')) { delSess(S.sess.k); S.sess = null; S.screen = 'home'; render(); } }
     else if (a === 'push') {
       var by = ($('#by').value || '').trim() || U.name, zero = !!($('#zero') && $('#zero').checked), st = stats(S.sess);

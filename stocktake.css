@@ -89,3 +89,6 @@ input[type=text],input[type=email],input[type=password],input[type=search],input
 .boot{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--mute)}
 .boot img{width:112px;height:112px;border-radius:26px;box-shadow:0 6px 24px rgba(0,0,0,.15)}
 .boot b{font-size:20px;color:var(--ink)}
+
+.go.dng{color:#b91c1c;border-color:#fecaca}
+.item{flex-wrap:wrap}

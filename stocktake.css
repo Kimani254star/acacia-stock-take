@@ -85,7 +85,7 @@ input[type=text],input[type=email],input[type=password],input[type=search],input
 @media (min-width:900px){.side{transform:none;width:240px}.shell{padding-left:240px}.menu{display:none}.scrim,.scrim.on{display:none}}
 .fonts{display:grid;grid-template-columns:1fr 1fr;gap:8px}.fontbtn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px 12px;text-align:left;font-size:15px;color:var(--ink)}.fontbtn small{display:block;color:var(--mute);font-size:13px;margin-top:2px}.fontbtn.on{border-color:var(--pri);outline:2px solid var(--pri)}
 
-.tl{width:34px;height:34px;border-radius:9px;flex:none;background:#faf7ee;object-fit:cover}
+.tl{width:38px;height:38px;border-radius:9px;flex:none;background:#fdf8f2;object-fit:cover}
 .boot{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--mute)}
 .boot img{width:112px;height:112px;border-radius:26px;box-shadow:0 6px 24px rgba(0,0,0,.15)}
 .boot b{font-size:20px;color:var(--ink)}

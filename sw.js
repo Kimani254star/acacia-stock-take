@@ -1,5 +1,5 @@
 /* Acacia Stock Count - keeps the app shell available offline. Data requests (Supabase) are never cached. */
-var V = 'acx-stockcount-v2';
+var V = 'acx-stockcount-v5';
 var SHELL = ['./', 'index.html', 'stocktake.css', 'stocktake.js', 'acacia-session.js', 'manifest.webmanifest', 'icons/icon-96.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(V).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
 self.addEventListener('activate', function (e) {

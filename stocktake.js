@@ -35,8 +35,13 @@
       });
     }, function (e) { clearTimeout(to); throw new Error(e && e.name === 'AbortError' ? 'The connection timed out.' : 'No internet connection.'); });
   }
+  /* every read is for ONE company: the company_id filter is sent AND the rows that come back are checked, so another company's data is never used */
   function getState(cid, key) {
-    return api('company_state?select=value,updated_at&company_id=eq.' + enc(cid) + '&key=eq.' + enc(key)).then(function (a) { return a && a[0] || null; });
+    if (!cid) return Promise.reject(new Error('No company on this login. Sign in again.'));
+    return api('company_state?select=company_id,value,updated_at&company_id=eq.' + enc(cid) + '&key=eq.' + enc(key)).then(function (a) {
+      a = (a || []).filter(function (r) { return r && String(r.company_id) === String(cid); });
+      return a[0] || null;
+    });
   }
   /* add/replace our entry in the shared inbox without overwriting other people's entries (compare-and-set on updated_at) */
   async function pushInbox(cid, sub) {
@@ -79,6 +84,7 @@
     function accept(r) {
       var d = Object.assign({}, r.data || {}); d.companyId = d.companyId || r.company_id;
       if (d.disabled === true || d.active === false || /^(inactive|disabled|suspended|blocked)$/i.test(String(d.status || ''))) throw new Error('This account is switched off. Ask your administrator.');
+      if (!d.companyId) throw new Error('This account has no company. Ask your administrator.');
       try { if (r.session && window.AcxSession) window.AcxSession.add(r.session); } catch (e) {}
       return { companyId: d.companyId, companyName: d.companyName || company, email: d.email || email, name: d.name || d.fullName || d.username || d.email || email, role: d.role || '' };
     }
@@ -134,6 +140,8 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function saveNow() { clearTimeout(saveT); if (S.sess) lset(skey(S.sess.k), S.sess); }
   function sessions() { return lget(ikey(), []).map(function (k) { return lget(skey(k), null); }).filter(Boolean); }
   function addIdx(k) { var a = lget(ikey(), []); if (a.indexOf(k) < 0) { a.push(k); lset(ikey(), a); } }
+  var hkey = function () { return 'acxst_hidden_' + U.companyId; };
+  function hidden() { return lget(hkey(), []); }
   function delSess(k) { LS.removeItem(skey(k)); lset(ikey(), lget(ikey(), []).filter(function (x) { return x !== k; })); }
   function stats(s) {
     var c = 0, units = 0; s.items.forEach(function (i) { var v = s.counts[i.key]; if (v != null) { c++; units += v; } });
@@ -166,22 +174,54 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (!s) { s = { k: k, kind: 'take', takeNo: t.no, takeId: t.id, warehouse: t.warehouse, category: t.category, title: t.no + ' - ' + t.warehouse, startedAt: new Date().toISOString(), items: t.lines, counts: {} }; lset(skey(k), s); addIdx(k); }
     openCount(s);
   }
+  /* items of one warehouse, read from Books' cloud copy (read only; the phone never writes stock). Cached for offline use. */
+  var icKey = function (wh) { return 'acxst_inv_' + U.companyId + '_' + wh; };
+  async function readWarehouse(wh) {
+    try {
+      var r = await getState(U.companyId, 'inventory_' + wh), a = pj(r && r.value); a = Array.isArray(a) ? a : [];
+      var seen = {}, items = [];
+      a.forEach(function (it) {
+        if (!it || !it.name) return; var key = low(it.sku || it.name); if (seen[key]) return; seen[key] = 1;
+        items.push({ key: key, name: it.name, sku: it.sku || '', barcode: it.barcode || '', category: it.category || it.categoryName || '' });
+      });
+      lset(icKey(wh), { at: new Date().toISOString(), items: items });
+      return items;
+    } catch (e) { var c = lget(icKey(wh), null); if (c && c.items) return c.items; throw e; }   /* offline: use the last synced list */
+  }
   async function startWarehouse(wh) {
     var k = 'W:' + wh, s = lget(skey(k), null);
     if (!s) {
       toast('Loading items...');
       try {
-        var r = await getState(U.companyId, 'inventory_' + wh), a = pj(r && r.value); a = Array.isArray(a) ? a : [];
-        var seen = {}, items = [];
-        a.forEach(function (it) {
-          if (!it || !it.name) return; var key = low(it.sku || it.name); if (seen[key]) return; seen[key] = 1;
-          items.push({ key: key, name: it.name, sku: it.sku || '', barcode: it.barcode || '', category: it.category || it.categoryName || '' });
-        });
+        var items = await readWarehouse(wh);
         if (!items.length) return toast('No items found in ' + wh + '.');
         s = { k: k, kind: 'wh', takeNo: '', warehouse: wh, category: '', title: wh + ' (new count)', startedAt: new Date().toISOString(), items: items, counts: {} }; lset(skey(k), s); addIdx(k);
       } catch (e) { return toast(e.message); }
     }
     openCount(s);
+  }
+  /* Pull the latest stock list from Books. New items are added to counts already started; counts you entered are never touched. */
+  async function syncStock(btn) {
+    if (!navigator.onLine) return toast('You are offline. Connect to sync stock from Books.', 3000);
+    if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
+    var added = 0, fresh = 0, err = '';
+    try {
+      await loadHome(true);
+      if (S.loadErr) throw new Error(S.loadErr);
+      for (var i = 0; i < S.whs.length; i++) { await readWarehouse(S.whs[i]); fresh++; }
+      sessions().forEach(function (ss) {
+        var src = null;
+        if (ss.kind === 'wh') { var c = lget(icKey(ss.warehouse), null); src = c && c.items; }
+        else if (ss.kind === 'take') { var t = S.takes.filter(function (x) { return x.no === ss.takeNo; })[0]; src = t && t.lines; }
+        if (!src) return;
+        var have = {}; ss.items.forEach(function (i) { have[i.key] = 1; });
+        var n = 0; src.forEach(function (i) { if (!have[i.key]) { ss.items.push(i); have[i.key] = 1; n++; } });
+        if (n) { added += n; lset(skey(ss.k), ss); if (S.sess && S.sess.k === ss.k) S.sess = ss; }
+      });
+      lset('acxst_synced_' + U.companyId, new Date().toISOString());
+    } catch (e) { err = e.message; }
+    if (err) toast('Sync failed: ' + err, 3500); else toast('Synced ' + fresh + ' warehouse' + (fresh === 1 ? '' : 's') + (added ? ' · ' + added + ' new item' + (added === 1 ? '' : 's') + ' added to your counts' : ' · stock list is up to date'), 3500);
+    render();
   }
   function openCount(s) { S.sess = s; S.screen = 'count'; S.tab = 'all'; S.q = ''; S.shown = PAGE; render(); }
 
@@ -298,7 +338,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function topbar(title, sub, back, right) {
     return '<div class="top">' + MENU + LOGO + (back ? '<button class="ib" data-a="back" aria-label="back">&#8592;</button>' : '') + '<h1>' + esc(title) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</h1>' + (right || '') + '</div>' + (navigator.onLine ? '' : '<div class="off">Offline - counts are saved on this phone</div>');
   }
-  var LOGO = '<img class="tl" src="icons/icon-96.png" alt="Acacia" width="34" height="34">';
+  var LOGO = '<img class="tl" src="icons/icon-96.png" alt="Acacia" width="38" height="38">';
   var MENU = '<button class="ib menu" data-a="menu" aria-label="menu">&#9776;</button>';
   function vLogin(err) {
     return '<div class="wrap"><img class="logo" src="icons/icon-192.png" alt="Acacia Books" width="96" height="96"><h1 class="center" style="margin:6px 0 2px;font-size:22px">Acacia Stock Count</h1><p class="center mute" style="margin:0 0 16px">Sign in with your Acacia Books login</p>' +
@@ -310,6 +350,8 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function vHome() {
     var ss = sessions(), h = topbar('Dashboard', U.companyName + ' · ' + U.name, false, '<button class="ib" data-a="refresh" aria-label="refresh">&#8635;</button>') + '<div class="wrap">';
     if (S.loadErr) h += '<div class="msg warn">' + esc(S.loadErr) + '</div>';
+    var lsy = lget('acxst_synced_' + U.companyId, '');
+    h += '<div class="card"><h2>Stock from Books</h2><div class="mute">' + (lsy ? 'Last synced ' + esc(new Date(lsy).toLocaleString()) : 'Not synced yet') + '. Items are read from Books; nothing is changed in Books.</div><button class="btn sec" data-a="sync">Sync stock from Books</button></div>';
     h += '<div class="card"><h2>On this phone</h2>';
     if (!ss.length) h += '<div class="mute">No counts started yet.</div>';
     ss.forEach(function (s) {
@@ -318,10 +360,13 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     });
     h += '</div><div class="card"><h2>Stock takes waiting in Books</h2>' + (S.loading ? '<div class="mute">Loading...</div>' : '');
     if (!S.loading && !S.takes.length) h += '<div class="mute">No open stock takes. Create one in Books (Inventory &gt; Assessment) or count a warehouse below.</div>';
-    S.takes.forEach(function (t) {
+    var hid = hidden(), vis = S.takes.filter(function (t) { return hid.indexOf(t.no) < 0; });
+    if (!S.loading && S.takes.length && !vis.length) h += '<div class="mute">All open stock takes are deleted from this phone.</div>';
+    vis.forEach(function (t) {
       var mine = lget(skey('T:' + t.no), null);
-      h += '<div class="item"><div class="t"><b>' + esc(t.no) + ' · ' + esc(t.warehouse) + '</b><span>' + esc(t.category || 'All categories') + ' · ' + t.count + ' items' + (t.date ? ' · ' + esc(t.date) : '') + '</span></div><button class="go" data-a="take" data-no="' + esc(t.no) + '">' + (mine ? 'Continue' : 'Count') + '</button></div>';
+      h += '<div class="item"><div class="t"><b>' + esc(t.no) + ' · ' + esc(t.warehouse) + '</b><span>' + esc(t.category || 'All categories') + ' · ' + t.count + ' items' + (t.date ? ' · ' + esc(t.date) : '') + '</span></div><button class="go" data-a="take" data-no="' + esc(t.no) + '">' + (mine ? 'Continue' : 'Count') + '</button><button class="go dng" data-a="deltake" data-no="' + esc(t.no) + '" aria-label="Delete this stock take">Delete</button></div>';
     });
+    if (hid.length) h += '<button class="btn sec" data-a="unhide">Show deleted stock takes (' + hid.length + ')</button>';
     h += '</div><div class="card"><h2>Count a warehouse</h2><div class="mute" style="margin-bottom:8px">Books will add this count to that warehouse\'s open stock take, or start a new one.</div>';
     if (!S.whs.length && !S.loading) h += '<div class="mute">No warehouses loaded.</div>';
     S.whs.forEach(function (w) { h += '<div class="item"><div class="t"><b>' + esc(w) + '</b></div><button class="go" data-a="wh" data-w="' + esc(w) + '">' + (lget(skey('W:' + w), null) ? 'Continue' : 'Count') + '</button></div>'; });
@@ -407,6 +452,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     }
     else if (a === 'logout') { if (confirm('Sign out? Counts not yet pushed stay on this phone.')) { LS.removeItem('acxst_user'); try { window.AcxSession && window.AcxSession.clear(true); } catch (e) {} U = null; S.sess = null; S.screen = 'home'; render(); } }
     else if (a === 'refresh') loadHome(true);
+    else if (a === 'sync') syncStock(b);
     else if (a === 'take') startTake(b.getAttribute('data-no'));
     else if (a === 'wh') startWarehouse(b.getAttribute('data-w'));
     else if (a === 'resume') { var s = lget(skey(b.getAttribute('data-k')), null); if (s) openCount(s); }
@@ -422,6 +468,15 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       var dm = 'Delete "' + ds.title + '" from this phone? ' + (ds.pushedAt ? 'It was already sent to Books; the copy in Books is not changed. ' : 'It has not been sent to Books, so the counts will be lost. ') + 'This cannot be undone.';
       if (confirm(dm)) { delSess(dk); if (S.sess && S.sess.k === dk) S.sess = null; toast('Count deleted.'); render(); }
     }
+    else if (a === 'deltake') {
+      var tn = b.getAttribute('data-no'), mk = lget(skey('T:' + tn), null);
+      if (confirm('Delete stock take ' + tn + ' from this phone? ' + (mk ? 'The counts you entered on this phone for it will be lost. ' : '') + 'Nothing is changed in Books. This cannot be undone.')) {
+        delSess('T:' + tn); if (S.sess && S.sess.k === 'T:' + tn) S.sess = null;
+        var hd = hidden(); if (hd.indexOf(tn) < 0) { hd.push(tn); lset(hkey(), hd); }
+        toast('Stock take deleted from this phone.'); render();
+      }
+    }
+    else if (a === 'unhide') { LS.removeItem(hkey()); render(); }
     else if (a === 'reedit') {
       if (confirm('Edit this count and send it again? The new count replaces the one already sent. If Books has already applied it, check the variance in Books again afterwards.')) {
         clearInterval(S.poll); delete S.sess.pushedAt; delete S.sess.pushedLines; saveNow(); S.screen = 'count'; render();

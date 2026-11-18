@@ -6,7 +6,7 @@
    * Inventory > Assessment. Counts are kept on the phone until you clear them, so a dropped connection loses nothing.
    * The phone never shows system quantities, so counting is always blind. */
   var SUPA = 'https://xglsampckermarjpczdf.supabase.co', KEY = 'sb_publishable_x-dPR7pzhvJgag9soW0I8w_yfKTmi6A';
-  var INBOX = 'stocktakeMobile', PAGE = 80, VER = '1.1.0';
+  var INBOX = 'stocktakeMobile', PAGE = 80, VER = '1.2.0', ASSIGNMENTS = 'stocktakeAssignments', APPROVALS = 'stocktakeApprovals';
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -146,13 +146,44 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   var hkey = function () { return 'acxst_hidden_' + U.companyId; };
   function hidden() { return lget(hkey(), []); }
   function delSess(k) { LS.removeItem(skey(k)); lset(ikey(), lget(ikey(), []).filter(function (x) { return x !== k; })); }
+  function audit(s, action, itemKey, detail) {
+    if (!s) return;
+    s.audit = Array.isArray(s.audit) ? s.audit : [];
+    var ev={ id: 'AU-' + Date.now() + '-' + Math.random().toString(36).slice(2,7), action: action, itemKey: itemKey || '', detail: detail || {}, assessment:s.title, by: U ? U.name : 'Unknown', email: U ? U.email : '', at: new Date().toISOString(), device: dev }; s.audit.push(ev);
+    if (U && navigator.onLine) saveCloudList('stocktakeAuditTrail', ev).catch(function(){});
+    if (s.audit.length > 1500) s.audit = s.audit.slice(-1500);
+    saveSess();
+  }
+  function allSessions() { return sessions(); }
+  function varianceRows(s) {
+    return (s.items || []).filter(function(i){ return i.systemQty != null && s.counts[i.key] != null; }).map(function(i){
+      var counted = Number(s.counts[i.key]), diff = counted - Number(i.systemQty), pct = Number(i.systemQty) ? diff / Math.abs(Number(i.systemQty)) * 100 : (diff ? 100 : 0);
+      return { item:i, system:Number(i.systemQty), counted:counted, diff:diff, pct:pct, value:i.unitCost == null ? null : diff * Number(i.unitCost) };
+    });
+  }
+  function itemMeta(s, key) { s.itemMeta = s.itemMeta || {}; return s.itemMeta[key] || {}; }
+  async function cloudList(key) { var r = await getState(U.companyId, key), a = pj(r && r.value); return Array.isArray(a) ? a : []; }
+  async function saveCloudList(key, record) {
+    for (var n=0;n<6;n++) {
+      var cur=await getState(U.companyId,key), list=cur?pj(cur.value):[]; if(!Array.isArray(list)) list=[];
+      list=list.filter(function(x){return x && x.id!==record.id;}); list.push(record); if(key==='stocktakeAuditTrail' && list.length>3000) list=list.slice(-3000); if(key===ASSIGNMENTS && list.length>1000) list=list.slice(-1000);
+      var now=new Date().toISOString(), body=JSON.stringify(list), res;
+      try {
+        if(cur) res=await api('company_state?company_id=eq.'+enc(U.companyId)+'&key=eq.'+enc(key)+'&updated_at=eq.'+enc(cur.updated_at),{method:'PATCH',headers:{'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({value:body,updated_at:now})});
+        else res=await api('company_state',{method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({company_id:U.companyId,key:key,value:body,updated_at:now})});
+        if(res && res.length) return true;
+      } catch(e) { if(e.status!==409 && e.code!=='23505') throw e; }
+      await new Promise(function(r){setTimeout(r,250+Math.random()*500);});
+    }
+    throw new Error('Could not save shared company record. Try again.');
+  }
   function stats(s) {
     var c = 0, units = 0; s.items.forEach(function (i) { var v = s.counts[i.key]; if (v != null) { c++; units += v; } });
     return { total: s.items.length, counted: c, left: s.items.length - c, units: units };
   }
 
   /* one entry per item key, so two lines with the same SKU/name can never share one count */
-  function uniqLines(a) { var seen = {}, out = []; (a || []).forEach(function (l) { if (!l) return; var key = l.key || low(l.sku || l.name); if (!key || seen[key]) return; seen[key] = 1; out.push({ key: key, name: l.name || l.sku || '', sku: l.sku || '', barcode: l.barcode || '', category: l.category || '' }); }); return out; }
+  function uniqLines(a) { var seen = {}, out = []; (a || []).forEach(function (l) { if (!l) return; var key = l.key || low(l.sku || l.name); if (!key || seen[key]) return; seen[key] = 1; out.push({ key: key, name: l.name || l.sku || '', sku: l.sku || '', barcode: l.barcode || '', barcodes: Array.isArray(l.barcodes) ? l.barcodes : [], category: l.category || '', systemQty: l.systemQty != null ? Number(l.systemQty) : null, unitCost: l.unitCost != null ? Number(l.unitCost) : null, section: l.section || l.location || '', serialTracked: !!l.serialTracked, batchTracked: !!l.batchTracked }); }); return out; }
 
   /* ---------- data for the home screen ---------- */
   async function loadHome(force) {
@@ -177,7 +208,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     var t = S.takes.filter(function (x) { return x.no === no; })[0]; if (!t) return;
     var k = 'T:' + t.no, s = lget(skey(k), null);
     if (!s && !t.lines) return toast('Tap the refresh button to load the items first.', 3000);
-    if (!s) { s = { k: k, kind: 'take', takeNo: t.no, takeId: t.id, warehouse: t.warehouse, category: t.category, title: t.no + ' - ' + t.warehouse, startedAt: new Date().toISOString(), items: t.lines, counts: {} }; lset(skey(k), s); addIdx(k); }
+    if (!s) { s = { k: k, kind: 'take', takeNo: t.no, takeId: t.id, warehouse: t.warehouse, category: t.category, title: t.no + ' - ' + t.warehouse, startedAt: new Date().toISOString(), items: t.lines, counts: {}, section: '', assignment: '', status: 'Counting', itemMeta: {}, audit: [] }; lset(skey(k), s); addIdx(k); }
     openCount(s);
   }
   /* items of one warehouse, read from Books' cloud copy (read only; the phone never writes stock). Cached for offline use. */
@@ -188,7 +219,9 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       var seen = {}, items = [];
       a.forEach(function (it) {
         if (!it || !it.name) return; var key = low(it.sku || it.name); if (seen[key]) return; seen[key] = 1;
-        items.push({ key: key, name: it.name, sku: it.sku || '', barcode: it.barcode || '', category: it.category || it.categoryName || '' });
+        var q = ['quantity','qty','qtyOnHand','stock','stockOnHand','availableStock','currentStock','stockQty','onHand'].map(function(k){ return it[k]; }).filter(function(v){ return v !== undefined && v !== null && v !== ''; })[0];
+        var cost = ['costPrice','purchasePrice','unitCost','buyingPrice','averageCost','cost','purchase_rate'].map(function(k){ return it[k]; }).filter(function(v){ return v !== undefined && v !== null && v !== ''; })[0];
+        items.push({ key: key, name: it.name, sku: it.sku || '', barcode: it.barcode || '', barcodes: Array.isArray(it.barcodes) ? it.barcodes : (Array.isArray(it.alternateBarcodes) ? it.alternateBarcodes : []), category: it.category || it.categoryName || '', systemQty: q == null || isNaN(Number(q)) ? null : Number(q), unitCost: cost == null || isNaN(Number(cost)) ? null : Number(cost), section: it.section || it.location || it.bin || '', serialTracked: !!(it.serialTracked || it.trackSerial), batchTracked: !!(it.batchTracked || it.trackBatch) });
       });
       lset(icKey(wh), { at: new Date().toISOString(), items: items });
       return items;
@@ -201,7 +234,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       try {
         var items = await readWarehouse(wh);
         if (!items.length) return toast('No items found in ' + wh + '.');
-        s = { k: k, kind: 'wh', takeNo: '', warehouse: wh, category: '', title: wh + ' (new count)', startedAt: new Date().toISOString(), items: items, counts: {} }; lset(skey(k), s); addIdx(k);
+        s = { k: k, kind: 'wh', takeNo: '', warehouse: wh, category: '', title: wh + ' (new count)', startedAt: new Date().toISOString(), items: items, counts: {}, section: '', assignment: '', status: 'Counting', itemMeta: {}, audit: [] }; lset(skey(k), s); addIdx(k);
       } catch (e) { return toast(e.message); }
     }
     openCount(s);
@@ -229,11 +262,12 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (err) toast('Sync failed: ' + err, 3500); else toast('Synced ' + fresh + ' warehouse' + (fresh === 1 ? '' : 's') + (added ? ' · ' + added + ' new item' + (added === 1 ? '' : 's') + ' added to your counts' : ' · stock list is up to date'), 3500);
     render();
   }
-  function openCount(s) { S.sess = s; S.screen = 'count'; S.tab = 'all'; S.q = ''; S.shown = PAGE; render(); }
+  function openCount(s) { S.sess = s; s.status = s.status || 'Counting'; S.screen = 'count'; S.tab = 'all'; S.q = ''; S.section=''; S.shown = PAGE; render(); }
 
   /* ---------- counting ---------- */
   function setCount(key, v) {
-    var s = S.sess; if (v == null || v === '') delete s.counts[key]; else s.counts[key] = v;
+    var s = S.sess, old = s.counts[key]; if (v == null || v === '') delete s.counts[key]; else s.counts[key] = v;
+    audit(s, 'COUNT_UPDATED', key, { before: old == null ? null : old, after: v == null || v === '' ? null : v });
     s.pushedAt = null; saveSess(); progress();
   }
   function parseQ(v) {
@@ -247,6 +281,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     var s = S.sess, q = low(S.q);
     return s.items.filter(function (i) {
       var c = s.counts[i.key] != null;
+      if (S.section && String(i.section||'') !== S.section) return false;
       if (S.tab === 'todo' && c) return false; if (S.tab === 'done' && !c) return false;
       return !q || (low(i.name) + ' ' + low(i.sku) + ' ' + low(i.barcode) + ' ' + low(i.category)).indexOf(q) > -1;
     });
@@ -254,7 +289,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function rowHtml(i) {
     var v = S.sess.counts[i.key];
     return '<div class="row' + (v != null ? ' done' : '') + '" data-k="' + esc(i.key) + '"><div class="t"><b>' + esc(i.name) + '</b><span>' + esc([i.sku, i.barcode, i.category].filter(Boolean).join(' · ')) + '</span></div>' +
-      '<div class="q"><button data-a="dec" aria-label="less">&minus;</button><input type="text" inputmode="decimal" data-a="inp" value="' + (v == null ? '' : esc(plain(v))) + '" placeholder="-" aria-label="Counted quantity for ' + esc(i.name) + '"><button data-a="inc" aria-label="more">+</button></div></div>';
+      '<div class="q"><button data-a="itemmeta" data-item="' + esc(i.key) + '" aria-label="Item details">⋯</button><button data-a="dec" aria-label="less">&minus;</button><input type="text" inputmode="decimal" data-a="inp" value="' + (v == null ? '' : esc(plain(v))) + '" placeholder="-" aria-label="Counted quantity for ' + esc(i.name) + '"><button data-a="inc" aria-label="more">+</button></div></div>';
   }
   function drawList() {
     var box = $('#list'); if (!box) return;
@@ -281,8 +316,8 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   /* a scan (camera, Bluetooth scanner or typed code + Enter): exact barcode or SKU */
   function handleCode(code) {
     var c = low(code), s = S.sess, hit = null; if (!c) return null;
-    for (var n = 0; n < s.items.length; n++) { var i = s.items[n]; if (low(i.barcode) === c || low(i.sku) === c) { hit = i; break; } }
-    if (!hit) return { ok: false, msg: 'Not in this list: ' + code };
+    for (var n = 0; n < s.items.length; n++) { var i = s.items[n]; if (low(i.barcode) === c || low(i.sku) === c || (i.barcodes || []).some(function(x){ return low(x) === c; })) { hit = i; break; } }
+    if (!hit) { var uk='acxst_unknown_'+U.companyId, ua=lget(uk,[]); ua.push({code:String(code),warehouse:s.warehouse,assessment:s.title,at:new Date().toISOString(),by:U.email}); lset(uk,ua.slice(-500)); return { ok: false, msg: 'Unknown code recorded: ' + code }; }
     if (S.scanInc) { bump(hit.key, 1); return { ok: true, msg: hit.name + ' → ' + fmt(s.counts[hit.key]) }; }
     S.q = hit.sku || hit.barcode || hit.name; S.tab = 'all'; S.shown = PAGE; var qi = $('#q'); if (qi) qi.value = S.q; drawList();
     var r = rowEl(hit.key); if (r) { r.classList.add('flash'); r.scrollIntoView({ block: 'center' }); var inp = r.querySelector('input'); if (inp) { inp.focus(); inp.select(); } }
@@ -323,9 +358,10 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   /* ---------- push ---------- */
   async function doPush(by, zero) {
     var s = S.sess, lines = [];
-    s.items.forEach(function (i) { var v = s.counts[i.key]; if (v == null && zero) v = 0; if (v != null) lines.push({ name: i.name, sku: i.sku, barcode: i.barcode, qty: v }); });
+    s.items.forEach(function (i) { var v = s.counts[i.key]; if (v == null && zero) v = 0; if (v != null) { var meta=itemMeta(s,i.key); lines.push({ name:i.name, sku:i.sku, barcode:i.barcode, barcodes:i.barcodes||[], qty:v, section:i.section||meta.section||'', batch:meta.batch||'', expiry:meta.expiry||'', serialNumbers:meta.serials||[], condition:meta.condition||'Good' }); } });
     if (!lines.length) throw new Error('Nothing has been counted yet.');
-    var sub = { id: 'MC-' + dev + '-' + s.k.replace(/[^A-Za-z0-9_-]/g, '_'), by: by, byEmail: U.email, at: new Date().toISOString(), warehouse: s.warehouse, takeNo: s.takeNo || '', device: dev, applied: false, lines: lines };
+    audit(s, 'SUBMITTED_TO_BOOKS', '', { lineCount: lines.length });
+    var sub = { id: 'MC-' + dev + '-' + s.k.replace(/[^A-Za-z0-9_-]/g, '_'), by: by, byEmail: U.email, at: new Date().toISOString(), warehouse: s.warehouse, takeNo: s.takeNo || '', assessmentId: s.k, device: dev, applied: false, lines: lines };
     await pushInbox(U.companyId, sub);
     s.pushedAt = sub.at; s.subId = sub.id; s.pushedLines = lines.length; saveNow();
     return sub;
@@ -359,7 +395,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     var ss = sessions(), h = topbar('Dashboard', U.companyName + ' · ' + U.name, false, '<button class="ib" data-a="refresh" aria-label="refresh">&#8635;</button>') + '<div class="wrap">';
     if (S.loadErr) h += '<div class="msg warn">' + esc(S.loadErr) + '</div>';
     var lsy = lget('acxst_synced_' + U.companyId, '');
-    h += '<div class="card"><h2>Stock from Books</h2><div class="mute">' + (lsy ? 'Last synced ' + esc(new Date(lsy).toLocaleString()) : 'Not synced yet') + '. Items are read from Books; nothing is changed in Books.</div><button class="btn sec" data-a="sync">Sync stock from Books</button></div>';
+    h += '<div class="card"><h2>Assessment overview</h2><div class="sum"><div><b>'+ss.length+'</b><span>assessments</span></div><div><b>'+ss.filter(function(x){return x.pushedAt;}).length+'</b><span>submitted</span></div><div><b>'+ss.reduce(function(n,x){return n+stats(x).counted;},0)+'</b><span>items counted</span></div><div><b>'+ss.reduce(function(n,x){return n+(x.audit||[]).length;},0)+'</b><span>audit events</span></div></div></div><div class="card"><h2>Stock from Books</h2><div class="mute">' + (lsy ? 'Last synced ' + esc(new Date(lsy).toLocaleString()) : 'Not synced yet') + '. Items are read from Books; nothing is changed in Books.</div><button class="btn sec" data-a="sync">Sync stock from Books</button></div>';
     h += '<div class="card"><h2>On this phone</h2>';
     if (!ss.length) h += '<div class="mute">No counts started yet.</div>';
     ss.forEach(function (s) {
@@ -384,7 +420,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     var s = S.sess, st = stats(s);
     return '<div class="stick"><div class="top">' + MENU + LOGO + '<button class="ib" data-a="back" aria-label="back">&#8592;</button><h1>' + esc(s.title) + '<small id="prog">' + st.counted + ' of ' + st.total + ' counted</small><div class="bar"><i id="bari" style="width:' + (st.total ? st.counted * 100 / st.total : 0) + '%"></i></div></h1><button class="ib" data-a="scan" aria-label="scan">&#128247;</button></div>' + (navigator.onLine ? '' : '<div class="off">Offline - counts are saved on this phone</div>') +
       '<div class="tools"><div class="srch"><input id="q" type="search" placeholder="Search, or scan a barcode / SKU" value="' + esc(S.q) + '" autocomplete="off"></div>' +
-      '<div class="tabs"><button data-a="tab" data-t="all" class="' + (S.tab === 'all' ? 'on' : '') + '">All</button><button data-a="tab" data-t="todo" class="' + (S.tab === 'todo' ? 'on' : '') + '">To count</button><button data-a="tab" data-t="done" class="' + (S.tab === 'done' ? 'on' : '') + '">Counted</button></div>' +
+      '<label>Warehouse section</label><select id="sectionFilter"><option value="">All sections</option>' + Array.from(new Set(s.items.map(function(i){return i.section;}).filter(Boolean))).map(function(x){return '<option value="'+esc(x)+'"'+(S.section===x?' selected':'')+'>'+esc(x)+'</option>';}).join('') + '</select><div class="tabs"><button data-a="tab" data-t="all" class="' + (S.tab === 'all' ? 'on' : '') + '">All</button><button data-a="tab" data-t="todo" class="' + (S.tab === 'todo' ? 'on' : '') + '">To count</button><button data-a="tab" data-t="done" class="' + (S.tab === 'done' ? 'on' : '') + '">Counted</button></div>' +
       '<label class="sw"><input type="checkbox" id="inc"' + (S.scanInc ? ' checked' : '') + '> A scan adds 1 to the count</label></div></div>' +
       '<div id="list"></div><div class="foot"><div style="min-width:70px"><b id="fcount">' + st.counted + ' / ' + st.total + '</b><div class="mute" style="font-size:11px">counted</div></div><button class="btn" data-a="review">Review &amp; push</button></div>';
   }
@@ -406,8 +442,8 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function csvCell(v) { v = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; }
   async function exportCsv(k) {
     var s = k ? lget(skey(k), null) : null; if (!s && S.sess && (!k || S.sess.k === k)) s = S.sess; if (!s) return toast('Count not found.');
-    var rows = [['Name', 'SKU', 'Barcode', 'Category', 'Counted']];
-    s.items.forEach(function (i) { var v = s.counts[i.key]; rows.push([i.name, i.sku, i.barcode, i.category, v == null ? '' : plain(v)]); });
+    var rows = [['Name', 'SKU', 'Barcode', 'Additional Barcodes', 'Category', 'System Quantity (manager review only)', 'Counted Quantity', 'Variance', 'Variance %', 'Unit Cost', 'Variance Value', 'Section', 'Batch', 'Expiry', 'Serial Numbers', 'Condition']];
+    s.items.forEach(function (i) { var v=s.counts[i.key], m=itemMeta(s,i.key), sys=i.systemQty, diff=(sys!=null&&v!=null)?Number(v)-Number(sys):'', pct=(sys!=null&&v!=null)?(Number(sys)?Number(diff)/Math.abs(Number(sys))*100:(diff?100:0)):'', cost=i.unitCost, value=(diff!==''&&cost!=null)?Number(diff)*Number(cost):''; rows.push([i.name,i.sku,i.barcode,(i.barcodes||[]).join('; '),i.category,sys==null?'':sys,v==null?'':plain(v),diff,pct,cost==null?'':cost,value,i.section||m.section||'',m.batch||'',m.expiry||'',(m.serials||[]).join('; '),m.condition||'']); });
     var text = '\ufeff' + rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
     var name = 'stock-count-' + String(s.title || 'count').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
     try {
@@ -420,6 +456,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
 
   /* ---------- what's new ---------- */
   var LOG = [
+    { v: '1.2.0', d: '18 Nov 2026', added: ['Stock Assessment register, Variance Management, Recount Management, Approval Centre, Counting Assignments, Stock Reports and Audit Trail.', 'Warehouse sections, shelves, racks and bins can be assigned to items and counted section by section.', 'Additional barcode / QR aliases, unknown-code register, batch, expiry, serial and item-condition capture.', 'Company-scoped cloud assignment and audit event sync when online.', 'Variance analysis and variance valuation where Books provides on-hand quantities and unit cost.'], fixed: ['Preserved blind counting: expected quantities are not shown on the counter screen.', 'Kept Books stock updates behind the existing push-to-Books workflow; local review status does not post adjustments.'] },
     { v: '1.1.0', d: '18 Nov 2026', fixed: [
       'Logo and icons were not loading (wrong folder), which also stopped the offline copy from installing. Fixed.',
       'Quantities of 1,000 or more could be misread (1,500 became 1.5) after editing. Fixed.',
@@ -438,6 +475,59 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       'Screen-reader labels on quantity boxes, and stricter security headers.'
     ] }
   ];
+  function moduleHeader(title, sub) { return topbar(title, sub || U.companyName, true) + '<div class="wrap">'; }
+  function vAssessments() {
+    var a=allSessions(), h=moduleHeader('Stock Assessments','All assessments saved on this device');
+    h+='<div class="card"><h2>Assessment register</h2><div class="sum"><div><b>'+a.length+'</b><span>assessments</span></div><div><b>'+a.filter(function(x){return x.pushedAt;}).length+'</b><span>sent to Books</span></div><div><b>'+a.filter(function(x){return !x.pushedAt;}).length+'</b><span>in progress</span></div><div><b>'+a.reduce(function(n,x){return n+stats(x).counted;},0)+'</b><span>items counted</span></div></div></div>';
+    if(!a.length) h+='<div class="card mute">No assessments on this device yet. Start one from the Dashboard.</div>';
+    a.slice().reverse().forEach(function(x){var st=stats(x);h+='<div class="card"><b>'+esc(x.title)+'</b><div class="mute">'+esc(x.warehouse)+' · '+st.counted+'/'+st.total+' counted · '+esc(x.status|| (x.pushedAt?'Submitted':'Counting'))+'</div><button class="go" data-a="resume" data-k="'+esc(x.k)+'">Open</button> <button class="go" data-a="csv" data-k="'+esc(x.k)+'">CSV</button></div>';});
+    return h+'</div>';
+  }
+  function vVariance() {
+    var a=allSessions(), rows=[]; a.forEach(function(x){varianceRows(x).forEach(function(r){rows.push({s:x,r:r});});});
+    var h=moduleHeader('Variance Management','Only available when Books supplies a system quantity');
+    h+='<div class="card"><h2>Variance summary</h2><div class="sum"><div><b>'+rows.filter(function(x){return x.r.diff<0;}).length+'</b><span>shortages</span></div><div><b>'+rows.filter(function(x){return x.r.diff>0;}).length+'</b><span>overages</span></div><div><b>'+rows.filter(function(x){return x.r.diff===0;}).length+'</b><span>matched</span></div><div><b>'+rows.filter(function(x){return x.r.value!=null;}).length+'</b><span>valued lines</span></div></div></div>';
+    if(!rows.length) h+='<div class="msg warn">No comparable system quantities are available in the synced Books records yet. Physical counts remain blind. Variance figures will appear when the Books inventory data includes its on-hand quantity field.</div>';
+    rows.forEach(function(x){var r=x.r;h+='<div class="card"><b>'+esc(r.item.name)+'</b><div class="mute">'+esc(x.s.title)+' · System '+fmt(r.system)+' · Counted '+fmt(r.counted)+'</div><div class="sum"><div><b>'+fmt(r.diff)+'</b><span>difference</span></div><div><b>'+fmt(r.pct)+'%</b><span>variance</span></div></div><div class="mute">'+(r.value==null?'Cost not available': 'Variance value: '+fmt(r.value))+'</div><button class="go" data-a="recount" data-k="'+esc(x.s.k)+'" data-item="'+esc(r.item.key)+'">Request recount</button></div>';});
+    return h+'</div>';
+  }
+  function vRecounts() {
+    var a=allSessions(), list=[]; a.forEach(function(x){(x.items||[]).forEach(function(i){var m=itemMeta(x,i.key);if(m.recount)list.push({s:x,i:i,m:m});});});
+    var h=moduleHeader('Recount Management','Items flagged for verification');
+    if(!list.length) h+='<div class="card mute">No recounts have been requested.</div>';
+    list.forEach(function(x){h+='<div class="card"><b>'+esc(x.i.name)+'</b><div class="mute">'+esc(x.s.title)+' · '+esc(x.m.recountStatus||'Requested')+'</div><button class="go" data-a="recountopen" data-k="'+esc(x.s.k)+'" data-item="'+esc(x.i.key)+'">Open recount</button><button class="go" data-a="recountdone" data-k="'+esc(x.s.k)+'" data-item="'+esc(x.i.key)+'">Mark verified</button></div>';});
+    return h+'</div>';
+  }
+  function vApprovals() {
+    var a=allSessions().filter(function(x){return x.pushedAt;}), shared=lget('acxst_shared_'+U.companyId+'_approvals',[]);
+    a.forEach(function(x){var r=shared.filter(function(z){return z.assessmentKey===x.k;})[0];if(r){x.approvalStatus=r.status;x.approvalUpdatedAt=r.updatedAt;}});
+    var h=moduleHeader('Approval Centre','Local review tracker · final stock posting remains in Books');
+    h+='<div class="msg warn">This centre tracks review decisions on this device. It does not approve or post inventory adjustments in Acacia Books. Complete the authorised approval in Books.</div>';
+    if(!a.length) h+='<div class="card mute">No submitted assessments awaiting review.</div>';
+    a.forEach(function(x){h+='<div class="card"><b>'+esc(x.title)+'</b><div class="mute">Sent '+esc(new Date(x.pushedAt).toLocaleString())+' · '+esc(x.approvalStatus||'Awaiting Books review')+'</div><button class="go" data-a="approval" data-k="'+esc(x.k)+'" data-v="Reviewed">Mark reviewed</button> <button class="go" data-a="approval" data-k="'+esc(x.k)+'" data-v="Needs follow-up">Needs follow-up</button></div>';});
+    return h+'</div>';
+  }
+  function vAssignments() {
+    var local=lget('acxst_assign_'+U.companyId,[]), h=moduleHeader('Counting Assignments','Allocate work to counters');
+    h+='<div class="card"><label>Assessment / warehouse</label><input id="asstitle" type="text" placeholder="e.g. Main Store - Aisle 1"><label>Assigned staff email</label><input id="asemail" type="email" placeholder="staff@company.com"><label>Section / location</label><input id="assect" type="text" placeholder="Aisle, rack, shelf or bin"><button class="btn" data-a="assign">Create assignment</button></div>';
+    if(!local.length)h+='<div class="card mute">No assignments created on this device.</div>';
+    local.slice().reverse().forEach(function(x){h+='<div class="card"><b>'+esc(x.title)+'</b><div class="mute">'+esc(x.email)+' · '+esc(x.section)+' · '+esc(x.status)+'</div>'+(x.status==='Assigned'?'<button class="go" data-a="assignDone" data-id="'+esc(x.id)+'">Mark completed</button>':'')+'</div>';});
+    return h+'</div>';
+  }
+  function vStockReports() {
+    var a=allSessions(), h=moduleHeader('Stock Reports','Assessment performance and audit summaries');
+    var counted=a.reduce(function(n,x){return n+stats(x).counted;},0), total=a.reduce(function(n,x){return n+stats(x).total;},0), audits=a.reduce(function(n,x){return n+(x.audit||[]).length;},0), metaItems=[];a.forEach(function(x){(x.items||[]).forEach(function(i){var m=itemMeta(x,i.key);if((m.condition && m.condition!=='Good') || (m.expiry && /^\d{4}-\d{2}-\d{2}$/.test(m.expiry) && new Date(m.expiry+'T23:59:59').getTime()<Date.now()))metaItems.push({name:i.name,condition:(m.condition&&m.condition!=='Good'?m.condition:'Expired by date'),assessment:x.title});});});
+    h+='<div class="card"><h2>Performance</h2><div class="sum"><div><b>'+a.length+'</b><span>assessments</span></div><div><b>'+counted+'</b><span>counted lines</span></div><div><b>'+(total?Math.round(counted*100/total):0)+'%</b><span>completion</span></div><div><b>'+audits+'</b><span>audit events</span></div></div></div>';
+    a.forEach(function(x){var st=stats(x), pct=st.total?Math.round(st.counted*100/st.total):0;h+='<div class="card"><b>'+esc(x.title)+'</b><div class="mute">'+pct+'% complete · '+st.counted+' counted · '+st.left+' remaining</div><button class="go" data-a="csv" data-k="'+esc(x.k)+'">Export CSV</button></div>';});
+    h+='<div class="card"><h2>Condition and traceability alerts</h2>'+(metaItems.length?metaItems.map(function(m){return '<div class="item"><div class="t"><b>'+esc(m.name)+'</b><span>'+esc(m.condition)+' · '+esc(m.assessment)+'</span></div></div>';}).join(''):'<div class="mute">No damaged or expired items recorded.</div>')+'</div><button class="btn sec" data-a="auditcsv">Export audit trail CSV</button>';return h+'</div>'; 
+  }
+  function vAudit() {
+    var a=allSessions(), events=[];a.forEach(function(x){(x.audit||[]).forEach(function(e){events.push({s:x,e:e});});});(lget('acxst_shared_'+U.companyId+'_audit',[])||[]).forEach(function(e){if(!events.some(function(x){return x.e.id===e.id;}))events.push({s:{title:e.assessment||'Assessment'},e:e});});events.sort(function(x,y){return y.e.at.localeCompare(x.e.at);});
+    var h=moduleHeader('Audit Trail','Activity recorded on this device');
+    if(!events.length)h+='<div class="card mute">No audit events yet. Counting changes and workflow actions will appear here.</div>';
+    events.slice(0,250).forEach(function(x){h+='<div class="item"><div class="t"><b>'+esc(x.e.action.replace(/_/g,' '))+'</b><span>'+esc(x.s.title)+' · '+esc(x.e.by)+' · '+esc(new Date(x.e.at).toLocaleString())+'</span></div></div>';});
+    return h+'</div>';
+  }
   function vAbout() {
     var h = topbar("What's new", 'Version ' + VER, false, '') + '<div class="wrap">';
     LOG.forEach(function (r) {
@@ -450,10 +540,10 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   }
 
   function vSide() {
-    var on = (S.screen === 'reports' || S.screen === 'appearance' || S.screen === 'about') ? S.screen : 'home';
+    var on = ['reports','appearance','about','assessments','variance','recounts','approvals','assignments','stockreports','audit'].indexOf(S.screen)>-1 ? S.screen : 'home';
     function it(id, ico, label) { return '<button class="nav' + (on === id ? ' on' : '') + '" data-a="nav" data-s="' + id + '"><span>' + ico + '</span>' + label + '</button>'; }
     return '<aside class="side" id="side"><div class="sh"><img src="icon-96.png" alt="Acacia Books"><div><b>Stock Count</b><small>' + esc(U.companyName || '') + '</small></div></div>' +
-      '<nav>' + it('home', '&#9632;', 'Dashboard') + it('reports', '&#9776;', 'Reports') + it('appearance', '&#9788;', 'Appearance') + it('about', '&#9432;', "What's new") + '</nav>' +
+      '<nav>' + it('home', '&#9632;', 'Dashboard') + it('assessments', '&#9633;', 'Stock Assessments') + it('variance', '&#177;', 'Variance Management') + it('recounts', '&#8635;', 'Recount Management') + it('approvals', '&#10003;', 'Approval Centre') + it('assignments', '&#9776;', 'Counting Assignments') + it('stockreports', '&#9638;', 'Stock Reports') + it('audit', '&#9711;', 'Audit Trail') + it('reports', '&#9776;', 'Reports') + it('appearance', '&#9788;', 'Appearance') + it('about', '&#9432;', "What's new") + '</nav>' +
       '<div class="sf"><div class="mute" style="margin:0 12px 8px">' + esc(U.name || U.email || '') + ' · v' + VER + '</div><button class="nav out" data-a="logout"><span>&#9211;</span>Log out</button></div></aside><div class="scrim" id="scrim" data-a="menu"></div>';
   }
   function vReports() {
@@ -482,6 +572,13 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (S.screen === 'count' && S.sess) { body = vCount(); after = drawList; }
     else if (S.screen === 'review' && S.sess) { body = vReview(); after = function () { if (S.sess.pushedAt && S.sess.subId) startPoll(S.sess.subId); }; }
     else if (S.screen === 'reports') body = vReports();
+    else if (S.screen === 'assessments') body = vAssessments();
+    else if (S.screen === 'variance') body = vVariance();
+    else if (S.screen === 'recounts') body = vRecounts();
+    else if (S.screen === 'approvals') body = vApprovals();
+    else if (S.screen === 'assignments') body = vAssignments();
+    else if (S.screen === 'stockreports') body = vStockReports();
+    else if (S.screen === 'audit') body = vAudit();
     else if (S.screen === 'appearance') body = vAppearance();
     else if (S.screen === 'about') body = vAbout();
     else { S.screen = 'home'; body = vHome(); }
@@ -496,7 +593,9 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (a === 'menu') { var sd = $('#side'), sc = $('#scrim'); if (sd) { sd.classList.toggle('open'); sc.classList.toggle('on', sd.classList.contains('open')); } return; }
     if (a === 'nav') {
       var to = b.getAttribute('data-s'); clearInterval(S.poll); saveNow(); closeScan(); S.sess = null; S.screen = to; render();
-      if (to === 'home') loadHome(); window.scrollTo(0, 0); return;
+      if (to === 'home') loadHome();
+      if (to === 'assignments' || to === 'audit' || to === 'approvals') { var cloudKey=to==='assignments'?ASSIGNMENTS:(to==='audit'?'stocktakeAuditTrail':APPROVALS); cloudList(cloudKey).then(function(list){lset('acxst_shared_'+U.companyId+'_'+to,list);if(to==='assignments'){var own=lget('acxst_assign_'+U.companyId,[]), ids={};own.forEach(function(x){ids[x.id]=1;});list.forEach(function(x){if(!ids[x.id])own.push(x);});lset('acxst_assign_'+U.companyId,own);} if(S.screen===to)render();}).catch(function(){}); }
+      window.scrollTo(0, 0); return;
     }
     if (a === 'theme' || a === 'accent' || a === 'size' || a === 'font') { var L = lget('acxst_look', {}); L[a] = b.getAttribute('data-v'); lset('acxst_look', L); applyLook(); render(); return; }
     if (a === 'login') {
@@ -532,6 +631,39 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
         toast('Stock take deleted from this phone.'); render();
       }
     }
+    else if (a === 'itemmeta') {
+      var ik=b.getAttribute('data-item'), ss=S.sess, ii=ss.items.filter(function(x){return x.key===ik;})[0];if(!ii)return;
+      var mm=itemMeta(ss,ik), section=prompt('Section / shelf / rack / bin:',ii.section||mm.section||'');if(section===null)return;
+      var alt=prompt('Additional barcode / QR codes, separated by commas:',(ii.barcodes||[]).join(', '));if(alt===null)return; ii.barcodes=alt.split(',').map(function(x){return x.trim();}).filter(Boolean);ii.section=section;
+      var batch=prompt('Batch / lot number (leave blank if not applicable):',mm.batch||'');if(batch===null)return;
+      var expiry=prompt('Expiry date (YYYY-MM-DD, if applicable):',mm.expiry||'');if(expiry===null)return;
+      var serial=prompt('Serial number(s), separated by commas (if applicable):',(mm.serials||[]).join(', '));if(serial===null)return;
+      var condition=prompt('Condition: Good, Damaged, Expired or Other',mm.condition||'Good');if(condition===null)return;
+      var serialList=serial.split(',').map(function(x){return x.trim();}).filter(Boolean);if(ii.serialTracked && ss.counts[ik]!=null && serialList.length!==Number(ss.counts[ik])){if(!confirm('This item is serial-tracked, but you entered '+serialList.length+' serial number(s) for a count of '+ss.counts[ik]+'. Save anyway?'))return;}
+      ss.itemMeta=ss.itemMeta||{};ss.itemMeta[ik]={batch:batch,expiry:expiry,serials:serialList,condition:condition,section:section};audit(ss,'ITEM_TRACEABILITY_UPDATED',ik,{batch:batch,expiry:expiry,serialCount:ss.itemMeta[ik].serials.length,condition:condition});saveNow();toast('Item traceability saved.');
+    }
+    else if (a === 'recount' || a === 'recountopen' || a === 'recountdone') {
+      var rk=b.getAttribute('data-k'), ri=b.getAttribute('data-item'), rs=lget(skey(rk),null); if(!rs)return;
+      rs.itemMeta=rs.itemMeta||{};rs.itemMeta[ri]=rs.itemMeta[ri]||{};
+      if(a==='recount'){rs.itemMeta[ri].recount=true;rs.itemMeta[ri].recountStatus='Requested';audit(rs,'RECOUNT_REQUESTED',ri);toast('Recount requested.');}
+      else if(a==='recountdone'){rs.itemMeta[ri].recountStatus='Verified';rs.itemMeta[ri].recount=false;audit(rs,'RECOUNT_VERIFIED',ri);toast('Recount marked verified.');}
+      else {S.sess=rs;openCount(rs);S.q=rs.items.filter(function(i){return i.key===ri;})[0].name;S.tab='all';render();}
+      lset(skey(rk),rs);render();
+    }
+    else if(a==='approval') {var ak=b.getAttribute('data-k'), av=lget(skey(ak),null);if(av){av.approvalStatus=b.getAttribute('data-v');av.approvalUpdatedAt=new Date().toISOString();audit(av,'APPROVAL_STATUS_CHANGED','',{status:av.approvalStatus});lset(skey(ak),av);var ar={id:'AP-'+String(ak).replace(/[^A-Za-z0-9_-]/g,'_'),assessmentKey:ak,assessment:av.title,status:av.approvalStatus,reviewer:U.email,updatedAt:av.approvalUpdatedAt,companyId:U.companyId};try{await saveCloudList(APPROVALS,ar);var sh=lget('acxst_shared_'+U.companyId+'_approvals',[]);sh=sh.filter(function(x){return x.id!==ar.id;});sh.push(ar);lset('acxst_shared_'+U.companyId+'_approvals',sh);toast('Review status synced for this company.');}catch(ex){toast('Saved locally; cloud sync failed: '+ex.message,3500);}render();}}
+    else if(a==='assign') {
+      var title=($('#asstitle').value||'').trim(), email=low($('#asemail').value), section=($('#assect').value||'').trim();if(!title||!email||!section)return toast('Enter assessment, staff email and section.');
+      var cloudAssignments=[];try{cloudAssignments=await cloudList(ASSIGNMENTS);}catch(ex){}
+      if(cloudAssignments.some(function(x){return low(x.title)===low(title)&&low(x.section)===low(section)&&x.status==='Assigned';}))return toast('This section already has an active assignment. Refresh assignments before allocating it again.',3500);
+      var rec={id:'AS-'+dev+'-'+Date.now(),title:title,email:email,section:section,status:'Assigned',assignedBy:U.email,at:new Date().toISOString(),companyId:U.companyId};
+      var aa=lget('acxst_assign_'+U.companyId,[]);aa.push(rec);lset('acxst_assign_'+U.companyId,aa);
+      try{await saveCloudList(ASSIGNMENTS,rec);toast('Assignment saved for this company.');}catch(er){toast('Saved on this phone; cloud sync failed: '+er.message,3500);}render();
+    }
+    else if(a==='assignDone') {var aid=b.getAttribute('data-id'), al=lget('acxst_assign_'+U.companyId,[]);al.forEach(function(x){if(x.id===aid)x.status='Completed';});lset('acxst_assign_'+U.companyId,al);var ca=await cloudList(ASSIGNMENTS);var cr=ca.filter(function(x){return x.id===aid;})[0];if(cr){cr.status='Completed';try{await saveCloudList(ASSIGNMENTS,cr);}catch(ex){}}toast('Assignment completed.');render();}
+    else if(a==='auditcsv') {
+      var ev=[];allSessions().forEach(function(x){(x.audit||[]).forEach(function(e){ev.push([x.title,e.action,e.by,e.email,e.at,e.itemKey,JSON.stringify(e.detail)]);});});
+      var blob=new Blob([['Assessment','Action','User','Email','Date','Item key','Details'].concat(ev).map(function(r){return r.map(csvCell).join(',');}).join('\r\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='acacia-stock-audit.csv';link.click();URL.revokeObjectURL(url);
+    }
     else if (a === 'csv') exportCsv(b.getAttribute('data-k') || (S.sess && S.sess.k));
     else if (a === 'unhide') { LS.removeItem(hkey()); render(); }
     else if (a === 'reedit') {
@@ -552,6 +684,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   document.addEventListener('change', function (e) {
     var t = e.target;
     if (t.id === 'showpw') { var pw = $('#lp'); if (pw) pw.type = t.checked ? 'text' : 'password'; return; }
+    if (t.id === 'sectionFilter') { S.section=t.value;S.shown=PAGE;drawList();return; }
     if (t.id === 'inc') { S.scanInc = t.checked; lset('acxst_inc', S.scanInc); return; }
     if (t.getAttribute && t.getAttribute('data-a') === 'inp') {
       var r = t.closest('.row'), k = r.getAttribute('data-k'), v = parseQ(t.value);

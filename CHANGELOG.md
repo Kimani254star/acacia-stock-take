@@ -25,3 +25,15 @@
 ### Notes
 - `acaciabooks-logo.png` (1.3 MB) is not used anywhere. It can be deleted.
 - Deploy: replace all files, then open the app once online so the new service worker (`acx-stockcount-v6`) installs.
+
+
+## 1.2.0 — 18 Nov 2026
+
+- Added Stock Assessments, Variance Management, Recount Management, Approval Centre, Counting Assignments, Stock Reports and Audit Trail navigation.
+- Added section / shelf / rack / bin tagging and section filtering during counts.
+- Added alternate barcode / QR codes and unknown scanned-code capture.
+- Added batch, expiry, serial-number and item-condition capture.
+- Added variance quantity, percentage and cost valuation where the synced Books inventory records expose system quantity and unit cost fields.
+- Added company-scoped cloud storage for assignment and audit events, with local offline copies.
+- Kept the count-entry screen blind; expected stock quantities are not displayed to counters.
+- Approval Centre is a local review tracker only; final approval and inventory posting remain in Acacia Books.

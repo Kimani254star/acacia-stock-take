@@ -6,7 +6,7 @@
    * Inventory > Assessment. Counts are kept on the phone until you clear them, so a dropped connection loses nothing.
    * The phone never shows system quantities, so counting is always blind. */
   var SUPA = 'https://xglsampckermarjpczdf.supabase.co', KEY = 'sb_publishable_x-dPR7pzhvJgag9soW0I8w_yfKTmi6A';
-  var INBOX = 'stocktakeMobile', PAGE = 80;
+  var INBOX = 'stocktakeMobile', PAGE = 80, VER = '1.1.0';
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -17,6 +17,9 @@
   function lset(k, v) { try { LS.setItem(k, JSON.stringify(v)); return true; } catch (e) { toast('Phone storage is full. Push your count now.'); return false; } }
   function pj(v) { try { for (var i = 0; i < 3 && typeof v === 'string'; i++) v = JSON.parse(v); } catch (e) { return null; } return v; }
   function fmt(n) { return (Math.round(Number(n) * 10000) / 10000).toLocaleString(undefined, { maximumFractionDigits: 4 }); }
+
+  /* plain number for input boxes: no thousands separator, so 1500 is never read back as 1.5 */
+  function plain(n) { return String(Math.round(Number(n) * 10000) / 10000); }
 
   var tt = null;
   function toast(m, ms) { var t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(tt); tt = setTimeout(function () { t.style.display = 'none'; }, ms || 2200); }
@@ -30,7 +33,7 @@
       clearTimeout(to);
       return r.text().then(function (t) {
         var j = null; try { j = t ? JSON.parse(t) : null; } catch (e) {}
-        if (!r.ok) { var er = new Error((j && j.message) || ('Request failed (' + r.status + ')')); er.status = r.status; er.code = j && j.code; throw er; }
+        if (!r.ok) { var er = new Error((j && j.message) || ('Request failed (' + r.status + ')')); er.status = r.status; er.code = j && j.code; er.auth = (r.status === 401 || r.status === 403); throw er; }
         return j;
       });
     }, function (e) { clearTimeout(to); throw new Error(e && e.name === 'AbortError' ? 'The connection timed out.' : 'No internet connection.'); });
@@ -148,6 +151,9 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     return { total: s.items.length, counted: c, left: s.items.length - c, units: units };
   }
 
+  /* one entry per item key, so two lines with the same SKU/name can never share one count */
+  function uniqLines(a) { var seen = {}, out = []; (a || []).forEach(function (l) { if (!l) return; var key = l.key || low(l.sku || l.name); if (!key || seen[key]) return; seen[key] = 1; out.push({ key: key, name: l.name || l.sku || '', sku: l.sku || '', barcode: l.barcode || '', category: l.category || '' }); }); return out; }
+
   /* ---------- data for the home screen ---------- */
   async function loadHome(force) {
     var ck = 'acxst_cache_' + U.companyId, cache = lget(ck, null);
@@ -157,12 +163,12 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       var rt = await getState(U.companyId, 'stockTakes'), rw = await getState(U.companyId, 'warehouses');
       var all = pj(rt && rt.value); all = Array.isArray(all) ? all : [];
       S.takes = all.filter(function (t) { return t && (t.status === 'Draft' || t.status === 'Counting'); }).map(function (t) {
-        return { id: t.id, no: t.no, warehouse: t.warehouse, category: t.category || '', date: t.date || '', status: t.status, count: (t.lines || []).length,
-          lines: (t.lines || []).map(function (l) { return { key: l.key || low(l.sku || l.name), name: l.name, sku: l.sku || '', barcode: l.barcode || '', category: l.category || '' }; }) };
+        return { id: t.id, no: t.no, warehouse: t.warehouse, category: t.category || '', date: t.date || '', status: t.status, count: uniqLines(t.lines).length,
+          lines: uniqLines(t.lines) };
       }).reverse();
       var w = pj(rw && rw.value); S.whs = (Array.isArray(w) ? w : []).map(function (x) { return x && x.name; }).filter(Boolean);
       lset(ck, { takes: S.takes.map(function (t) { return { id: t.id, no: t.no, warehouse: t.warehouse, category: t.category, date: t.date, status: t.status, count: t.count }; }), whs: S.whs });
-    } catch (e) { S.loadErr = e.message + (cache ? ' Showing what was loaded last time.' : ''); }
+    } catch (e) { S.loadErr = (e.auth ? 'Your session may have expired. Log out and sign in again. ' : '') + e.message + (cache ? ' Showing what was loaded last time.' : ''); }
     S.loading = false; render();
   }
 
@@ -232,7 +238,9 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   }
   function parseQ(v) {
     var x = String(v == null ? '' : v).replace(/\s/g, ''); if (x === '') return null;
-    if (/^-?\d+,\d+$/.test(x)) x = x.replace(',', '.');
+    if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(x)) x = x.replace(/,/g, '');   /* 1,500 = 1500 */
+    else if (/^\d*,\d+$/.test(x)) x = x.replace(',', '.');                  /* 2,5 = 2.5 */
+    if (/^\d+\.$/.test(x)) x = x.slice(0, -1);
     if (!/^\d*\.?\d+$/.test(x)) return NaN; return parseFloat(x);
   }
   function filtered() {
@@ -246,7 +254,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function rowHtml(i) {
     var v = S.sess.counts[i.key];
     return '<div class="row' + (v != null ? ' done' : '') + '" data-k="' + esc(i.key) + '"><div class="t"><b>' + esc(i.name) + '</b><span>' + esc([i.sku, i.barcode, i.category].filter(Boolean).join(' · ')) + '</span></div>' +
-      '<div class="q"><button data-a="dec" aria-label="less">&minus;</button><input type="text" inputmode="decimal" data-a="inp" value="' + (v == null ? '' : esc(fmt(v))) + '" placeholder="-"><button data-a="inc" aria-label="more">+</button></div></div>';
+      '<div class="q"><button data-a="dec" aria-label="less">&minus;</button><input type="text" inputmode="decimal" data-a="inp" value="' + (v == null ? '' : esc(plain(v))) + '" placeholder="-" aria-label="Counted quantity for ' + esc(i.name) + '"><button data-a="inc" aria-label="more">+</button></div></div>';
   }
   function drawList() {
     var box = $('#list'); if (!box) return;
@@ -264,7 +272,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function rowEl(key) { var rs = document.querySelectorAll('#list .row'); for (var i = 0; i < rs.length; i++) if (rs[i].getAttribute('data-k') === key) return rs[i]; return null; }
   function refreshRow(key) {
     var r = rowEl(key); if (!r) return; var v = S.sess.counts[key];
-    r.classList.toggle('done', v != null); r.querySelector('input').value = v == null ? '' : fmt(v);
+    r.classList.toggle('done', v != null); r.querySelector('input').value = v == null ? '' : plain(v);
   }
   function bump(key, d) {
     var cur = S.sess.counts[key], nv = cur == null ? (d > 0 ? d : 0) : Math.max(0, Math.round((cur + d) * 10000) / 10000);
@@ -286,7 +294,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function beep() { try { var a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(); o.frequency.value = 880; o.connect(a.destination); o.start(); setTimeout(function () { o.stop(); a.close(); }, 90); } catch (e) {} try { navigator.vibrate && navigator.vibrate(40); } catch (e) {} }
   function onCam(code) {
     var now = Date.now(); if (code === cam.last && now - cam.at < 1800) return; cam.last = code; cam.at = now;
-    var r = handleCode(code); if (!r) return; if (r.ok) beep(); $('#scanMsg').textContent = r.msg;
+    var r = handleCode(code); if (!r) return; if (r.ok) beep(); else { try { navigator.vibrate && navigator.vibrate([60, 40, 60]); } catch (e) {} } $('#scanMsg').textContent = r.msg;
   }
   async function openScan() {
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return toast('This browser cannot open the camera. Use a Bluetooth scanner or type the code.');
@@ -338,13 +346,13 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   function topbar(title, sub, back, right) {
     return '<div class="top">' + MENU + LOGO + (back ? '<button class="ib" data-a="back" aria-label="back">&#8592;</button>' : '') + '<h1>' + esc(title) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</h1>' + (right || '') + '</div>' + (navigator.onLine ? '' : '<div class="off">Offline - counts are saved on this phone</div>');
   }
-  var LOGO = '<img class="tl" src="icons/icon-96.png" alt="Acacia" width="38" height="38">';
+  var LOGO = '<img class="tl" src="icon-96.png" alt="Acacia" width="38" height="38">';
   var MENU = '<button class="ib menu" data-a="menu" aria-label="menu">&#9776;</button>';
-  function vLogin(err) {
-    return '<div class="wrap"><img class="logo" src="icons/icon-192.png" alt="Acacia Books" width="96" height="96"><h1 class="center" style="margin:6px 0 2px;font-size:22px">Acacia Stock Count</h1><p class="center mute" style="margin:0 0 16px">Sign in with your Acacia Books login</p>' +
-      '<div class="card"><label>Company name</label><input id="lc" type="text" autocomplete="organization" autocapitalize="none" value="' + esc(lget('acxst_lastco', '')) + '">' +
-      '<label>Email</label><input id="le" type="email" autocomplete="username" autocapitalize="none" value="' + esc(lget('acxst_lastem', '')) + '">' +
-      '<label>Password</label><input id="lp" type="password" autocomplete="current-password">' +
+  function vLogin(err, co, em) {
+    return '<div class="wrap"><img class="logo" src="icon-192.png" alt="Acacia Books" width="96" height="96"><h1 class="center" style="margin:6px 0 2px;font-size:22px">Acacia Stock Count</h1><p class="center mute" style="margin:0 0 16px">Sign in with your Acacia Books login</p>' +
+      '<div class="card"><label>Company name</label><input id="lc" type="text" autocomplete="organization" autocapitalize="none" value="' + esc(co != null ? co : lget('acxst_lastco', '')) + '">' +
+      '<label>Email</label><input id="le" type="email" autocomplete="username" autocapitalize="none" value="' + esc(em != null ? em : lget('acxst_lastem', '')) + '">' +
+      '<label>Password</label><input id="lp" type="password" autocomplete="current-password"><label class="sw"><input type="checkbox" id="showpw"> Show password</label>' +
       (err ? '<div class="msg bad">' + esc(err) + '</div>' : '') + '<button class="btn" id="lgo" data-a="login">Sign in</button></div></div>';
   }
   function vHome() {
@@ -385,21 +393,68 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (st.left && !s.pushedAt) h += '<div class="msg warn">' + st.left + ' item(s) have no count. They are left out of the variance unless you tick the box below. <button class="go" data-a="todo" style="margin-top:8px">Show items not counted</button></div>';
     if (s.pushedAt) {
       h += '<div class="msg ok"><b>Sent ' + esc(new Date(s.pushedAt).toLocaleTimeString()) + '.</b> ' + esc(s.pushedLines) + ' item(s) are waiting for Books.</div><div id="recv" class="msg warn">Waiting for Books to pick it up. Books must be open and signed in on a computer. You can close this screen.</div>' +
-        '<button class="btn ok" data-a="reedit">Edit counts and send again</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
+        '<button class="btn ok" data-a="reedit">Edit counts and send again</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="csv">Download counts (CSV)</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
     } else {
       h += '<div class="card"><label>Counted by</label><input id="by" type="text" value="' + esc(lget('acxst_by', U.name)) + '">' +
         (st.left ? '<label class="sw" style="margin-top:14px"><input type="checkbox" id="zero"> Treat the ' + st.left + ' uncounted item(s) as 0 (not on the shelf)</label>' : '') + '</div>' +
-        (msg ? '<div class="msg bad">' + esc(msg) + '</div>' : '') + '<button class="btn ok" id="pgo" data-a="push">Push to Assessment</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
+        (msg ? '<div class="msg bad">' + esc(msg) + '</div>' : '') + '<button class="btn ok" id="pgo" data-a="push">Push to Assessment</button><button class="btn sec" data-a="back">Back to counting</button><button class="btn sec" data-a="csv">Download counts (CSV)</button><button class="btn sec" data-a="clear">Delete this count from the phone</button>';
     }
     return h + '</div>';
   }
 
+  /* ---------- export counts as a CSV (backup, or to open in Excel) ---------- */
+  function csvCell(v) { v = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; }
+  async function exportCsv(k) {
+    var s = k ? lget(skey(k), null) : null; if (!s && S.sess && (!k || S.sess.k === k)) s = S.sess; if (!s) return toast('Count not found.');
+    var rows = [['Name', 'SKU', 'Barcode', 'Category', 'Counted']];
+    s.items.forEach(function (i) { var v = s.counts[i.key]; rows.push([i.name, i.sku, i.barcode, i.category, v == null ? '' : plain(v)]); });
+    var text = '\ufeff' + rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
+    var name = 'stock-count-' + String(s.title || 'count').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+    try {
+      var file = new File([text], name, { type: 'text/csv' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: s.title }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' })); a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000); toast('Counts saved as a CSV file.');
+  }
+
+  /* ---------- what's new ---------- */
+  var LOG = [
+    { v: '1.1.0', d: '18 Nov 2026', fixed: [
+      'Logo and icons were not loading (wrong folder), which also stopped the offline copy from installing. Fixed.',
+      'Quantities of 1,000 or more could be misread (1,500 became 1.5) after editing. Fixed.',
+      'Pressing Enter on a name search that found nothing now tells you; it used to do nothing.',
+      'Going offline or online while typing a quantity no longer throws the number away.',
+      'The same SKU twice in a stock take could share one count. Each item is now listed once.',
+      'Counts are now also saved when the app goes to the background, not only when it closes.',
+      'A failed login no longer clears the company name and email you typed.',
+      'The offline cache no longer stores error pages, and one missing file no longer breaks it.'
+    ], added: [
+      'Download or share your counts as a CSV from the review screen or Reports.',
+      'Show password on the sign-in screen.',
+      'Tapping a quantity box selects it, so you can type straight over it.',
+      'A different buzz when a scanned code is not in the list.',
+      'Clear message when your session has expired.',
+      'Screen-reader labels on quantity boxes, and stricter security headers.'
+    ] }
+  ];
+  function vAbout() {
+    var h = topbar("What's new", 'Version ' + VER, false, '') + '<div class="wrap">';
+    LOG.forEach(function (r) {
+      h += '<div class="card"><h2>Version ' + esc(r.v) + ' · ' + esc(r.d) + '</h2>';
+      if (r.added && r.added.length) h += '<b>New</b><ul>' + r.added.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+      if (r.fixed && r.fixed.length) h += '<b>Fixed</b><ul>' + r.fixed.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+
   function vSide() {
-    var on = (S.screen === 'reports' || S.screen === 'appearance') ? S.screen : 'home';
+    var on = (S.screen === 'reports' || S.screen === 'appearance' || S.screen === 'about') ? S.screen : 'home';
     function it(id, ico, label) { return '<button class="nav' + (on === id ? ' on' : '') + '" data-a="nav" data-s="' + id + '"><span>' + ico + '</span>' + label + '</button>'; }
-    return '<aside class="side" id="side"><div class="sh"><img src="icons/icon-96.png" alt="Acacia Books"><div><b>Stock Count</b><small>' + esc(U.companyName || '') + '</small></div></div>' +
-      '<nav>' + it('home', '&#9632;', 'Dashboard') + it('reports', '&#9776;', 'Reports') + it('appearance', '&#9788;', 'Appearance') + '</nav>' +
-      '<div class="sf"><div class="mute" style="margin:0 12px 8px">' + esc(U.name || U.email || '') + '</div><button class="nav out" data-a="logout"><span>&#9211;</span>Log out</button></div></aside><div class="scrim" id="scrim" data-a="menu"></div>';
+    return '<aside class="side" id="side"><div class="sh"><img src="icon-96.png" alt="Acacia Books"><div><b>Stock Count</b><small>' + esc(U.companyName || '') + '</small></div></div>' +
+      '<nav>' + it('home', '&#9632;', 'Dashboard') + it('reports', '&#9776;', 'Reports') + it('appearance', '&#9788;', 'Appearance') + it('about', '&#9432;', "What's new") + '</nav>' +
+      '<div class="sf"><div class="mute" style="margin:0 12px 8px">' + esc(U.name || U.email || '') + ' · v' + VER + '</div><button class="nav out" data-a="logout"><span>&#9211;</span>Log out</button></div></aside><div class="scrim" id="scrim" data-a="menu"></div>';
   }
   function vReports() {
     var ss = sessions(), sent = 0, units = 0, counted = 0, h = topbar('Reports', U.companyName + ' · ' + U.name, false, '') + '<div class="wrap">';
@@ -409,7 +464,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     if (!ss.length) h += '<div class="mute">No counts yet. Start one from the Dashboard.</div>';
     ss.slice().sort(function (a, b) { return String(b.startedAt || '').localeCompare(String(a.startedAt || '')); }).forEach(function (s) {
       var st = stats(s), pct = st.total ? Math.round(st.counted * 100 / st.total) : 0;
-      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted (' + pct + '%) · ' + fmt(st.units) + ' units · ' + st.left + ' left' + (s.startedAt ? ' · started ' + new Date(s.startedAt).toLocaleDateString() : '') + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '<span class="pill warn">not sent</span>') + '<button class="go" data-a="resume" data-k="' + esc(s.k) + '">Edit</button><button class="go dng" data-a="del" data-k="' + esc(s.k) + '" aria-label="Delete this count">Delete</button></div>';
+      h += '<div class="item"><div class="t"><b>' + esc(s.title) + '</b><span>' + st.counted + ' of ' + st.total + ' counted (' + pct + '%) · ' + fmt(st.units) + ' units · ' + st.left + ' left' + (s.startedAt ? ' · started ' + new Date(s.startedAt).toLocaleDateString() : '') + (s.pushedAt ? ' · sent ' + new Date(s.pushedAt).toLocaleString() : '') + '</span></div>' + (s.pushedAt ? '<span class="pill ok">sent</span>' : '<span class="pill warn">not sent</span>') + '<button class="go" data-a="csv" data-k="' + esc(s.k) + '">CSV</button><button class="go" data-a="resume" data-k="' + esc(s.k) + '">Edit</button><button class="go dng" data-a="del" data-k="' + esc(s.k) + '" aria-label="Delete this count">Delete</button></div>';
     });
     return h + '</div></div>';
   }
@@ -428,6 +483,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     else if (S.screen === 'review' && S.sess) { body = vReview(); after = function () { if (S.sess.pushedAt && S.sess.subId) startPoll(S.sess.subId); }; }
     else if (S.screen === 'reports') body = vReports();
     else if (S.screen === 'appearance') body = vAppearance();
+    else if (S.screen === 'about') body = vAbout();
     else { S.screen = 'home'; body = vHome(); }
     app.innerHTML = '<div class="shell">' + vSide() + '<main class="main">' + body + '</main></div>';
     if (after) after();
@@ -448,7 +504,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       if (!c || !em || !pw) return toast('Enter company name, email and password.');
       b.disabled = true; b.textContent = 'Signing in...';
       try { U = await doLogin(c, em, pw); lset('acxst_user', U); lset('acxst_lastco', c); lset('acxst_lastem', em); S.screen = 'home'; loadHome(); }
-      catch (er) { $('#app').innerHTML = vLogin(er.message); }
+      catch (er) { $('#app').innerHTML = vLogin(er.message, c, em); }
     }
     else if (a === 'logout') { if (confirm('Sign out? Counts not yet pushed stay on this phone.')) { LS.removeItem('acxst_user'); try { window.AcxSession && window.AcxSession.clear(true); } catch (e) {} U = null; S.sess = null; S.screen = 'home'; render(); } }
     else if (a === 'refresh') loadHome(true);
@@ -476,6 +532,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
         toast('Stock take deleted from this phone.'); render();
       }
     }
+    else if (a === 'csv') exportCsv(b.getAttribute('data-k') || (S.sess && S.sess.k));
     else if (a === 'unhide') { LS.removeItem(hkey()); render(); }
     else if (a === 'reedit') {
       if (confirm('Edit this count and send it again? The new count replaces the one already sent. If Books has already applied it, check the variance in Books again afterwards.')) {
@@ -494,6 +551,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   });
   document.addEventListener('change', function (e) {
     var t = e.target;
+    if (t.id === 'showpw') { var pw = $('#lp'); if (pw) pw.type = t.checked ? 'text' : 'password'; return; }
     if (t.id === 'inc') { S.scanInc = t.checked; lset('acxst_inc', S.scanInc); return; }
     if (t.getAttribute && t.getAttribute('data-a') === 'inp') {
       var r = t.closest('.row'), k = r.getAttribute('data-k'), v = parseQ(t.value);
@@ -506,14 +564,20 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
-    if (e.target.id === 'q') { var v = e.target.value.trim(); if (!v) return; var r = handleCode(v); if (r && r.ok) { if (S.scanInc) { S.q = ''; e.target.value = ''; drawList(); } toast(r.msg); } e.preventDefault(); }
+    if (e.target.id === 'q') { var v = e.target.value.trim(); if (!v) return; var r = handleCode(v); if (r && r.ok) { if (S.scanInc) { S.q = ''; e.target.value = ''; drawList(); } toast(r.msg); } else if (r && !S.view.length) toast(r.msg, 2500); else if (r) e.target.blur(); e.preventDefault(); }
     else if (e.target.id === 'lp') { var g = $('#lgo'); if (g) g.click(); }
     else if (e.target.getAttribute && e.target.getAttribute('data-a') === 'inp') e.target.blur();
   });
   $('#scanClose').addEventListener('click', closeScan);
-  window.addEventListener('online', function () { render(); });
-  window.addEventListener('offline', function () { render(); });
+  /* tapping a quantity box selects it, so typing replaces the number */
+  document.addEventListener('focusin', function (e) { var t = e.target; if (t && t.getAttribute && t.getAttribute('data-a') === 'inp') setTimeout(function () { try { t.select(); } catch (x) {} }, 0); });
+  /* going online/offline redraws the banner; commit a half-typed quantity first so it is not lost */
+  function netChange() { var ae = document.activeElement; if (ae && ae.tagName === 'INPUT' && ae.blur) ae.blur(); render(); }
+  window.addEventListener('online', netChange);
+  window.addEventListener('offline', netChange);
   window.addEventListener('pagehide', saveNow);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') saveNow(); });
 
+  if ('serviceWorker' in navigator) window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
   if (U) loadHome(); else render();
 })();

@@ -92,3 +92,4 @@ input[type=text],input[type=email],input[type=password],input[type=search],input
 
 .go.dng{color:#b91c1c;border-color:#fecaca}
 .item{flex-wrap:wrap}
+.card ul{margin:6px 0 12px;padding-left:20px}.card li{margin:4px 0;font-size:14px}

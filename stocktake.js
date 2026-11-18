@@ -6,7 +6,7 @@
    * Inventory > Assessment. Counts are kept on the phone until you clear them, so a dropped connection loses nothing.
    * The phone never shows system quantities, so counting is always blind. */
   var SUPA = 'https://xglsampckermarjpczdf.supabase.co', KEY = 'sb_publishable_x-dPR7pzhvJgag9soW0I8w_yfKTmi6A';
-  var INBOX = 'stocktakeMobile', PAGE = 80, VER = '1.2.0', ASSIGNMENTS = 'stocktakeAssignments', APPROVALS = 'stocktakeApprovals';
+  var INBOX = 'stocktakeMobile', PAGE = 80, VER = '1.3.0', ASSIGNMENTS = 'stocktakeAssignments', APPROVALS = 'stocktakeApprovals';
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -117,20 +117,74 @@
   /* ---------- state ---------- */
   var U = lget('acxst_user', null), S = { screen: 'home', sess: null, tab: 'all', q: '', shown: PAGE, view: [], takes: [], whs: [], loadErr: '', loading: false, scanInc: lget('acxst_inc', true), poll: null };
   var ACCENTS = { blue: '#1e3a8a', green: '#166534', purple: '#6d28d9', teal: '#0f766e', red: '#b91c1c', slate: '#334155' };
-var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI" is the default, as in Books */
-    system: ['System UI', 'system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif'],
-    inter: ['Inter', 'Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif'],
-    roboto: ['Roboto', 'Roboto,system-ui,-apple-system,"Segoe UI",Arial,sans-serif'],
-    poppins: ['Poppins', 'Poppins,system-ui,-apple-system,"Segoe UI",Arial,sans-serif'],
-    georgia: ['Georgia', 'Georgia,"Times New Roman",serif'],
-    mono: ['Monospace', 'ui-monospace,Menlo,Consolas,"Courier New",monospace']
+  var FONTS = {
+    'cambria': ['Cambria', 'Cambria,Georgia,serif'],
+    'arial': ['Arial', 'Arial,Helvetica,sans-serif'],
+    'roboto': ['Roboto', 'Roboto,Arial,sans-serif'],
+    'open-sans': ['Open Sans', '"Open Sans",Arial,sans-serif'],
+    'lato': ['Lato', 'Lato,Arial,sans-serif'],
+    'inter': ['Inter', 'Inter,Arial,sans-serif'],
+    'poppins': ['Poppins', 'Poppins,Arial,sans-serif'],
+    'montserrat': ['Montserrat', 'Montserrat,Arial,sans-serif'],
+    'nunito': ['Nunito', 'Nunito,Arial,sans-serif'],
+    'raleway': ['Raleway', 'Raleway,Arial,sans-serif'],
+    'georgia': ['Georgia', 'Georgia,serif'],
+    'garamond': ['Garamond', 'Garamond,"Times New Roman",serif'],
+    'times-new-roman': ['Times New Roman', '"Times New Roman",serif'],
+    'calibri': ['Calibri', 'Calibri,Arial,sans-serif'],
+    'aptos': ['Aptos', 'Aptos,Calibri,Arial,sans-serif'],
+    'segoe-ui': ['Segoe UI', '"Segoe UI",Arial,sans-serif'],
+    'verdana': ['Verdana', 'Verdana,sans-serif'],
+    'tahoma': ['Tahoma', 'Tahoma,sans-serif'],
+    'trebuchet': ['Trebuchet MS', '"Trebuchet MS",Arial,sans-serif'],
+    'palatino': ['Palatino Linotype', '"Palatino Linotype",Palatino,serif'],
+    'baskerville': ['Baskerville', 'Baskerville,"Times New Roman",serif'],
+    'merriweather': ['Merriweather', 'Merriweather,Georgia,serif'],
+    'playfair': ['Playfair Display', '"Playfair Display",Georgia,serif'],
+    'libre-baskerville': ['Libre Baskerville', '"Libre Baskerville",Georgia,serif'],
+    'source-sans': ['Source Sans 3', '"Source Sans 3",Arial,sans-serif'],
+    'ibm-plex': ['IBM Plex Sans', '"IBM Plex Sans",Arial,sans-serif'],
+    'ubuntu': ['Ubuntu', 'Ubuntu,Arial,sans-serif'],
+    'fira-sans': ['Fira Sans', '"Fira Sans",Arial,sans-serif'],
+    'work-sans': ['Work Sans', '"Work Sans",Arial,sans-serif'],
+    'dm-sans': ['DM Sans', '"DM Sans",Arial,sans-serif'],
+    'manrope': ['Manrope', 'Manrope,Arial,sans-serif'],
+    'rubik': ['Rubik', 'Rubik,Arial,sans-serif'],
+    'mulish': ['Mulish', 'Mulish,Arial,sans-serif'],
+    'quicksand': ['Quicksand', 'Quicksand,Arial,sans-serif'],
+    'cabin': ['Cabin', 'Cabin,Arial,sans-serif'],
+    'pt-sans': ['PT Sans', '"PT Sans",Arial,sans-serif'],
+    'noto-sans': ['Noto Sans', '"Noto Sans",Arial,sans-serif'],
+    'oswald': ['Oswald', 'Oswald,Arial,sans-serif'],
+    'roboto-slab': ['Roboto Slab', '"Roboto Slab",Georgia,serif'],
+    'bitter': ['Bitter', 'Bitter,Georgia,serif'],
+    'libre-franklin': ['Libre Franklin', '"Libre Franklin",Arial,sans-serif'],
+    'karla': ['Karla', 'Karla,Arial,sans-serif'],
+    'archivo': ['Archivo', 'Archivo,Arial,sans-serif'],
+    'public-sans': ['Public Sans', '"Public Sans",Arial,sans-serif'],
+    'figtree': ['Figtree', 'Figtree,Arial,sans-serif'],
+    'plus-jakarta': ['Plus Jakarta Sans', '"Plus Jakarta Sans",Arial,sans-serif'],
+    'sora': ['Sora', 'Sora,Arial,sans-serif'],
+    'urbanist': ['Urbanist', 'Urbanist,Arial,sans-serif'],
+    'outfit': ['Outfit', 'Outfit,Arial,sans-serif'],
+    'lexend': ['Lexend', 'Lexend,Arial,sans-serif'],
+    'spectral': ['Spectral', 'Spectral,Georgia,serif'],
+    'cormorant': ['Cormorant Garamond', '"Cormorant Garamond",Georgia,serif'],
+    'crimson-text': ['Crimson Text', '"Crimson Text",Georgia,serif'],
+    'lora': ['Lora', 'Lora,Georgia,serif'],
+    'eb-garamond': ['EB Garamond', '"EB Garamond",Georgia,serif'],
+    'arvo': ['Arvo', 'Arvo,Georgia,serif'],
+    'zilla-slab': ['Zilla Slab', '"Zilla Slab",Georgia,serif'],
+    'inconsolata': ['Inconsolata', 'Inconsolata,monospace'],
+    'space-grotesk': ['Space Grotesk', '"Space Grotesk",Arial,sans-serif'],
+    'exo-2': ['Exo 2', '"Exo 2",Arial,sans-serif']
   };
   function applyLook() {
     var L = lget('acxst_look', {}), h = document.documentElement;
     if (L.theme === 'dark' || L.theme === 'light') h.setAttribute('data-theme', L.theme); else h.removeAttribute('data-theme');
     var c = ACCENTS[L.accent];
     if (c) { h.style.setProperty('--pri', c); h.style.setProperty('--pri2', c); } else { h.style.removeProperty('--pri'); h.style.removeProperty('--pri2'); }
-    document.body.style.fontFamily = (FONTS[L.font] || FONTS.system)[1];
+    document.body.style.fontFamily = (FONTS[L.font] || FONTS.cambria)[1];
     document.body.style.fontSize = ({ s: '14px', m: '16px', l: '18px' })[L.size] || '16px';
     var m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', c || '#1e3a8a');
   }
@@ -559,11 +613,11 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
     return h + '</div></div>';
   }
   function vAppearance() {
-    var L = lget('acxst_look', {}), th = L.theme || 'auto', ac = L.accent || 'blue', sz = L.size || 'm', fn = FONTS[L.font] ? L.font : 'system';
+    var L = lget('acxst_look', {}), th = L.theme || 'auto', ac = L.accent || 'blue', sz = L.size || 'm', fn = FONTS[L.font] ? L.font : 'cambria';
     function seg(a, cur, opts) { return '<div class="tabs">' + opts.map(function (o) { return '<button data-a="' + a + '" data-v="' + o[0] + '" class="' + (cur === o[0] ? 'on' : '') + '">' + o[1] + '</button>'; }).join('') + '</div>'; }
     var sw = Object.keys(ACCENTS).map(function (k) { return '<button class="swatch' + (ac === k ? ' on' : '') + '" data-a="accent" data-v="' + k + '" style="background:' + ACCENTS[k] + '" aria-label="' + k + '"></button>'; }).join('');
     return topbar('Appearance', 'Saved on this phone', false, '') + '<div class="wrap"><div class="card"><h2>Theme</h2>' + seg('theme', th, [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']]) + '</div>' +
-      '<div class="card"><h2>Colour</h2><div class="swatches">' + sw + '</div></div><div class="card"><h2>Font</h2><div class="fonts">' + Object.keys(FONTS).map(function (k) { return '<button class="fontbtn' + (fn === k ? ' on' : '') + '" data-a="font" data-v="' + k + '" style="font-family:' + FONTS[k][1].replace(/"/g, "'") + '">' + FONTS[k][0] + '<small>Aa 123</small></button>'; }).join('') + '</div></div><div class="card"><h2>Text size</h2>' + seg('size', sz, [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']]) + '</div></div>';
+      '<div class="card"><h2>Colour</h2><div class="swatches">' + sw + '</div></div><div class="card"><h2>Font</h2><label for="fontChoice" class="mute">Choose from 60 font types</label><select id="fontChoice" class="font-select" data-font-select> ' + Object.keys(FONTS).map(function (k) { return '<option value="' + k + '"' + (fn === k ? ' selected' : '') + ' style="font-family:' + FONTS[k][1].replace(/"/g, "'") + '">' + FONTS[k][0] + '</option>'; }).join('') + '</select><div class="font-preview" id="fontPreview" style="font-family:' + FONTS[fn][1].replace(/"/g, "'") + '">Acacia Books · Aa Bb 123</div></div><div class="card"><h2>Text size</h2>' + seg('size', sz, [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']]) + '</div></div>';
   }
   function render() {
     var app = $('#app'); if (!app) return;
@@ -587,6 +641,9 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
   }
 
   /* ---------- events ---------- */
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.matches('[data-font-select]')) { var L = lget('acxst_look', {}); L.font = e.target.value; lset('acxst_look', L); applyLook(); render(); }
+  });
   document.addEventListener('click', async function (e) {
     var b = e.target.closest && e.target.closest('[data-a]'); if (!b) return; var a = b.getAttribute('data-a');
     if (a === 'inp') return;
@@ -597,7 +654,7 @@ var FONTS = {   /* same list as Books > Settings > Appearance > Font; "System UI
       if (to === 'assignments' || to === 'audit' || to === 'approvals') { var cloudKey=to==='assignments'?ASSIGNMENTS:(to==='audit'?'stocktakeAuditTrail':APPROVALS); cloudList(cloudKey).then(function(list){lset('acxst_shared_'+U.companyId+'_'+to,list);if(to==='assignments'){var own=lget('acxst_assign_'+U.companyId,[]), ids={};own.forEach(function(x){ids[x.id]=1;});list.forEach(function(x){if(!ids[x.id])own.push(x);});lset('acxst_assign_'+U.companyId,own);} if(S.screen===to)render();}).catch(function(){}); }
       window.scrollTo(0, 0); return;
     }
-    if (a === 'theme' || a === 'accent' || a === 'size' || a === 'font') { var L = lget('acxst_look', {}); L[a] = b.getAttribute('data-v'); lset('acxst_look', L); applyLook(); render(); return; }
+    if (a === 'theme' || a === 'accent' || a === 'size') { var L = lget('acxst_look', {}); L[a] = b.getAttribute('data-v'); lset('acxst_look', L); applyLook(); render(); return; }
     if (a === 'login') {
       var c = $('#lc').value.trim(), em = $('#le').value.trim(), pw = $('#lp').value.trim();
       if (!c || !em || !pw) return toast('Enter company name, email and password.');

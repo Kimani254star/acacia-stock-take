@@ -37,3 +37,10 @@
 - Added company-scoped cloud storage for assignment and audit events, with local offline copies.
 - Kept the count-entry screen blind; expected stock quantities are not displayed to counters.
 - Approval Centre is a local review tracker only; final approval and inventory posting remain in Acacia Books.
+
+
+## Version 1.3.0
+- Expanded Appearance font choices to 60 font types.
+- Replaced the font tile grid with a searchable-friendly native dropdown and a live font preview.
+- Cambria is the default font; the selected font is saved on the device and restored on next visit.
+- Added Google Fonts loading for web fonts and sensible local fallbacks when offline.

@@ -270,9 +270,10 @@
   async function readWarehouse(wh) {
     try {
       var r = await getState(U.companyId, 'inventory_' + wh), a = pj(r && r.value); a = Array.isArray(a) ? a : [];
-      var seen = {}, items = [];
+      var seen = {}, items = [], skuN = {};
+      a.forEach(function (it) { if (it && it.name && it.sku) { var s0 = low(it.sku); skuN[s0] = (skuN[s0] || 0) + 1; } });
       a.forEach(function (it) {
-        if (!it || !it.name) return; var key = low(it.sku || it.name); if (seen[key]) return; seen[key] = 1;
+        if (!it || !it.name) return; var key = it.sku ? (skuN[low(it.sku)] > 1 ? low(it.sku) + '|' + low(it.name) : low(it.sku)) : low(it.name); if (seen[key]) return; seen[key] = 1;
         var q = ['quantity','qty','qtyOnHand','stock','stockOnHand','availableStock','currentStock','stockQty','onHand'].map(function(k){ return it[k]; }).filter(function(v){ return v !== undefined && v !== null && v !== ''; })[0];
         var cost = ['costPrice','purchasePrice','unitCost','buyingPrice','averageCost','cost','purchase_rate'].map(function(k){ return it[k]; }).filter(function(v){ return v !== undefined && v !== null && v !== ''; })[0];
         items.push({ key: key, name: it.name, sku: it.sku || '', barcode: it.barcode || '', barcodes: Array.isArray(it.barcodes) ? it.barcodes : (Array.isArray(it.alternateBarcodes) ? it.alternateBarcodes : []), category: it.category || it.categoryName || '', systemQty: q == null || isNaN(Number(q)) ? null : Number(q), unitCost: cost == null || isNaN(Number(cost)) ? null : Number(cost), section: it.section || it.location || it.bin || '', serialTracked: !!(it.serialTracked || it.trackSerial), batchTracked: !!(it.batchTracked || it.trackBatch) });
